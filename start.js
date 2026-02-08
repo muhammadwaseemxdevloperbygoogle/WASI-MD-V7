@@ -25,6 +25,10 @@ async function runLoader() {
 
         // Check again
         if (!fs.existsSync(CORE_DIR)) {
+            // Check if we are in a container where code is in root
+            if (fs.existsSync(path.join(__dirname, 'index.js'))) {
+                return; // Code is in root, that's fine
+            }
             console.error('❌ Loader failed to download bot code.');
             console.error('   Please check GITLAB_TOKEN is set correctly.\n');
             process.exit(1);
@@ -40,18 +44,25 @@ async function start() {
     console.log('   ⚡ WASI-MD V7 - STARTING BOT');
     console.log('═══════════════════════════════════════════════\n');
 
-    const entryPath = path.join(CORE_DIR, ENTRY_FILE);
+    let entryPath = path.join(CORE_DIR, ENTRY_FILE);
+    let workDir = CORE_DIR;
 
-    // Check if core exists, if not run loader first
-    if (!fs.existsSync(CORE_DIR)) {
+    // Check if we are in Docker container where index.js is in root
+    if (!fs.existsSync(CORE_DIR) && fs.existsSync(path.join(__dirname, ENTRY_FILE))) {
+        entryPath = path.join(__dirname, ENTRY_FILE);
+        workDir = __dirname;
+    } else if (!fs.existsSync(CORE_DIR)) {
+        // Check if core exists, if not run loader first
         console.log('📦 Core not found, running loader...\n');
         await runLoader();
+        entryPath = path.join(CORE_DIR, ENTRY_FILE);
+        workDir = CORE_DIR;
     }
 
     // Verify entry file exists
     if (!fs.existsSync(entryPath)) {
-        console.error(`❌ ERROR: Entry file "${ENTRY_FILE}" not found in core!`);
-        console.error('   Check if the GitLab repo has the correct structure.\n');
+        console.error(`❌ ERROR: Entry file "${ENTRY_FILE}" not found!`);
+        console.error('   Please check your repository structure.\n');
         process.exit(1);
     }
 
@@ -60,7 +71,7 @@ async function start() {
 
     // Spawn the bot process
     const bot = spawn('node', [entryPath], {
-        cwd: CORE_DIR,
+        cwd: workDir,
         stdio: 'inherit',
         env: process.env
     });

@@ -20,6 +20,43 @@ const CONFIG = {
     USE_DOCKER: process.env.USE_DOCKER === 'true' ? true : (process.env.DYNO ? false : process.env.USE_DOCKER !== 'false')
 };
 
+// Check if running inside Docker container
+function isInsideDocker() {
+    try {
+        // Check for Docker-specific files
+        if (fs.existsSync('/.dockerenv')) return true;
+
+        // Check cgroup for docker
+        if (fs.existsSync('/proc/1/cgroup')) {
+            const cgroup = fs.readFileSync('/proc/1/cgroup', 'utf8');
+            if (cgroup.includes('docker') || cgroup.includes('containerd')) return true;
+        }
+
+        // Check if index.js exists at root (Docker image structure)
+        if (fs.existsSync(path.join(__dirname, 'index.js'))) {
+            // Verify it's the actual bot code, not just a placeholder
+            const content = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+            if (content.includes('WASI-MD') || content.includes('baileys') || content.includes('makeWASocket')) {
+                return true;
+            }
+        }
+
+        return false;
+    } catch (e) {
+        return false;
+    }
+}
+
+// Check if Heroku is using container stack
+function isHerokuContainerStack() {
+    // When using heroku.yml with container stack, DYNO_RAM is usually set
+    // and the build process is different
+    return process.env.DYNO && (
+        process.env.HEROKU_SLUG_COMMIT ||
+        fs.existsSync(path.join(__dirname, 'index.js'))
+    );
+}
+
 // Utility functions
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -48,7 +85,7 @@ function isDockerEnvironment() {
     const isRailway = process.env.RAILWAY_ENVIRONMENT !== undefined;
     const isRender = process.env.RENDER !== undefined;
     const isHeroku = process.env.DYNO !== undefined;
-    
+
     return isRailway || isRender || (isHeroku && process.env.HEROKU_DOCKER === 'true');
 }
 
@@ -57,16 +94,16 @@ async function pullDockerImage(retries = CONFIG.MAX_RETRIES) {
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
             log.step(`Pulling Docker image (attempt ${attempt}/${retries})...`);
-            
+
             execSync(`docker pull ${CONFIG.DOCKER_IMAGE}`, {
                 stdio: 'inherit',
                 timeout: 300000 // 5 minute timeout
             });
-            
+
             return true;
         } catch (error) {
             log.warn(`Pull attempt ${attempt} failed: ${error.message}`);
-            
+
             if (attempt < retries) {
                 log.info(`Waiting ${CONFIG.RETRY_DELAY / 1000}s before retry...`);
                 await sleep(CONFIG.RETRY_DELAY);
@@ -93,21 +130,21 @@ function buildDockerEnvVars() {
     const envVars = [];
     const requiredVars = ['SESSION_ID', 'OWNER_NUMBER'];
     const optionalVars = ['PREFIX', 'BOT_NAME', 'MODE', 'AUTO_READ', 'ANTI_DELETE', 'MONGO_URI'];
-    
+
     // Add required vars
     for (const varName of requiredVars) {
         if (process.env[varName]) {
             envVars.push(`-e ${varName}="${process.env[varName]}"`);
         }
     }
-    
+
     // Add optional vars
     for (const varName of optionalVars) {
         if (process.env[varName]) {
             envVars.push(`-e ${varName}="${process.env[varName]}"`);
         }
     }
-    
+
     return envVars.join(' ');
 }
 
@@ -115,7 +152,7 @@ async function cloneWithRetry(authUrl, retries = CONFIG.MAX_RETRIES) {
     const TARGET_DIR = path.join(__dirname, 'core');
     const REPO = 'itxxwasi-group/WASI-MD-V7';
     const BRANCH = process.env.BRANCH || 'master';
-    
+
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
             log.step(`Clone attempt ${attempt}/${retries}...`);
@@ -151,7 +188,7 @@ async function loader() {
     const isHeroku = process.env.DYNO !== undefined;
     const isRailway = process.env.RAILWAY_ENVIRONMENT !== undefined;
     const isRender = process.env.RENDER !== undefined;
-    
+
     if (isHeroku) {
         log.info('🟣 Heroku platform detected');
     } else if (isRailway) {
@@ -161,10 +198,21 @@ async function loader() {
     }
     console.log('');
 
+    // ═══════════════════════════════════════════════════════════════
+    // CHECK IF RUNNING INSIDE DOCKER CONTAINER (Container Stack)
+    // This handles deployment via heroku.yml / template button
+    // ═══════════════════════════════════════════════════════════════
+    if (isInsideDocker()) {
+        log.success('🐳 Running inside Docker container!');
+        log.info('Bot code is already present from Docker image.');
+        console.log('');
+        return; // Let start.js handle the execution
+    }
+
     // Check required environment variables
     const sessionId = process.env.SESSION_ID;
     const ownerNumber = process.env.OWNER_NUMBER;
-    
+
     if (!sessionId || !ownerNumber) {
         log.error('Required environment variables missing!');
         console.log('');
@@ -185,12 +233,12 @@ async function loader() {
 
     // Determine deployment method
     const useDocker = CONFIG.USE_DOCKER && (isDockerAvailable() || isDockerEnvironment());
-    
+
     if (useDocker) {
         log.info('🐳 Docker mode enabled');
         log.info(`Image: ${CONFIG.DOCKER_IMAGE}`);
         console.log('');
-        
+
         // Check Docker availability
         if (!isDockerAvailable()) {
             log.error('Docker is not available on this system!');
@@ -207,11 +255,11 @@ async function loader() {
             }
             process.exit(1);
         }
-        
+
         // Pull Docker image
         log.step('Pulling WASI-MD V7 Docker image...');
         const pullSuccess = await pullDockerImage();
-        
+
         if (!pullSuccess) {
             log.error('Failed to pull Docker image!');
             console.log('');
@@ -222,49 +270,49 @@ async function loader() {
             console.log('');
             process.exit(1);
         }
-        
+
         log.success('Docker image pulled successfully');
-        
+
         // Cleanup old container
         cleanupContainer();
-        
+
         // Build environment variables
         const envVars = buildDockerEnvVars();
-        
+
         // Run container
         log.step('Starting WASI-MD V7 container...');
         console.log('');
-        
+
         const dockerCmd = `docker run -d --name ${CONFIG.CONTAINER_NAME} --restart unless-stopped ${envVars} -v wasi_session:/app/session ${CONFIG.DOCKER_IMAGE}`;
-        
+
         try {
             execSync(dockerCmd, { stdio: 'inherit' });
             log.success('Container started successfully!');
-            
+
             // Show logs
             console.log('');
             log.info('Showing container logs (Ctrl+C to exit):');
             console.log('');
-            
+
             const logsProcess = spawn('docker', ['logs', '-f', CONFIG.CONTAINER_NAME], {
                 stdio: 'inherit'
             });
-            
+
             // Handle graceful shutdown
             process.on('SIGTERM', () => {
                 logsProcess.kill();
             });
-            
+
             process.on('SIGINT', () => {
                 logsProcess.kill();
                 process.exit(0);
             });
-            
+
         } catch (error) {
             log.error(`Failed to start container: ${error.message}`);
             process.exit(1);
         }
-        
+
     } else {
         // Fallback to GitLab clone method
         if (isHeroku) {
@@ -273,12 +321,20 @@ async function loader() {
             log.info('📦 GitLab clone mode enabled');
         }
         console.log('');
-        
+
         const token = process.env.GITLAB_TOKEN;
         if (!token) {
             log.error('GITLAB_TOKEN environment variable is not set!');
             console.log('');
-            console.log('   GitLab mode requires a Personal Access Token.');
+            if (isHeroku) {
+                log.info('💡 RECOMMENDED FOR HEROKU:');
+                log.info('   You are likely using the Node.js buildpack.');
+                log.info('   To use Docker instead (recommended), run this command:');
+                console.log('   \x1b[33mheroku stack:set container -a your-app-name\x1b[0m');
+                log.info('   Then redeploy your app.');
+                console.log('');
+            }
+            console.log('   Otherwise, GitLab mode requires a Personal Access Token.');
             console.log('');
             console.log('   📋 How to get your token:');
             console.log('   1. Go to: https://gitlab.com/-/profile/personal_access_tokens');
