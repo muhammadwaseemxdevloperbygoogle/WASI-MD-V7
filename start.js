@@ -4,12 +4,36 @@
  * © ITXXWASI - All Rights Reserved
  */
 
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
 const CORE_DIR = path.join(__dirname, 'core');
-const ENTRY_FILE = 'index.js'; // Change this to your bot's actual entry file
+const ENTRY_FILE = 'index.js';
+
+async function runLoader() {
+    console.log('\n═══════════════════════════════════════════════');
+    console.log('   📦 WASI-MD V7 - LOADING BOT CODE');
+    console.log('═══════════════════════════════════════════════\n');
+
+    try {
+        // Run the loader
+        require('./itxxwasi.js');
+
+        // Wait for loader to complete
+        await new Promise(resolve => setTimeout(resolve, 5000));
+
+        // Check again
+        if (!fs.existsSync(CORE_DIR)) {
+            console.error('❌ Loader failed to download bot code.');
+            console.error('   Please check GITLAB_TOKEN is set correctly.\n');
+            process.exit(1);
+        }
+    } catch (err) {
+        console.error('❌ Loader error:', err.message);
+        process.exit(1);
+    }
+}
 
 async function start() {
     console.log('\n═══════════════════════════════════════════════');
@@ -18,13 +42,13 @@ async function start() {
 
     const entryPath = path.join(CORE_DIR, ENTRY_FILE);
 
-    // Check if core exists
+    // Check if core exists, if not run loader first
     if (!fs.existsSync(CORE_DIR)) {
-        console.error('❌ ERROR: Core directory not found!');
-        console.error('   The loader may have failed. Check GITLAB_TOKEN.\n');
-        process.exit(1);
+        console.log('📦 Core not found, running loader...\n');
+        await runLoader();
     }
 
+    // Verify entry file exists
     if (!fs.existsSync(entryPath)) {
         console.error(`❌ ERROR: Entry file "${ENTRY_FILE}" not found in core!`);
         console.error('   Check if the GitLab repo has the correct structure.\n');
